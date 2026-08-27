@@ -1,0 +1,116 @@
+[tasks]
+bmc
+prove
+cover
+live
+as_ic_rsp_vld prove 
+as_ic_offset_vld prove
+as_ls_rsp_vld prove
+as_live_ic_rsp_vld live
+as_live_ls_rsp_vld live
+as_live_bound_ic_rsp_vld prove 
+as_live_bound_ls_rsp_vld prove
+as_ic_e2e_rsp_data_vld prove
+as_ls_e2e_rsp_data_vld prove
+as_itlb_update_priority prove
+as_ic_e2e_rsp_data_color prove 
+as_ls_e2e_rsp_data_color prove 
+
+[options]
+bmc:   mode bmc
+bmc:   depth 15
+prove: mode prove
+prove: depth 30
+cover: mode cover
+cover: depth 40
+live:  mode live 
+# live:  depth 30
+
+[engines]
+bmc:   smtbmc boolector abc pdr
+prove: smtbmc boolector
+cover: smtbmc boolector
+live:  aiger suprove
+
+[script]
+plugin -i slang
+
+--pycode-begin--
+safety_define = {
+    "as_ic_rsp_vld":    "AS_IC_RSP_VLD",
+    "as_ic_offset_vld": "AS_IC_OFFSET_VLD",
+    "as_ls_rsp_vld":    "AS_LS_RSP_VLD",
+    "as_live_bound_ic_rsp_vld": "AS_LIVE_BOUND_IC_RSP_VLD",
+    "as_live_bound_ls_rsp_vld": "AS_LIVE_BOUND_LS_RSP_VLD",
+    "as_ic_e2e_rsp_data_vld": "AS_IC_E2E_RSP_DATA_VLD",
+    "as_ls_e2e_rsp_data_vld": "AS_LS_E2E_RSP_DATA_VLD",
+    "as_itlb_update_priority": "AS_ITLB_UPDATE_PRIORITY",
+    "as_ic_e2e_rsp_data_color" : "AS_IC_E2E_RSP_DATA_COLOR",
+    "as_ls_e2e_rsp_data_color" : "AS_LS_E2E_RSP_DATA_COLOR"
+}.get(task)
+
+live_define = {
+    "as_live_ic_rsp_vld": "AS_LIVE_IC_RSP_VLD",
+    "as_live_ls_rsp_vld": "AS_LIVE_LS_RSP_VLD",
+}.get(task)
+
+formal_args = ["-formal"]
+if live_define:
+    formal_args.append("-D" + live_define)
+if safety_define:
+    formal_args.append("-D" + safety_define)
+
+slang_args = ["--top", "mmu_fv_master", "--extern-modules", "-DDEBUG"]
+if safety_define:
+    slang_args.append("-D" + safety_define)
+
+sources = [
+    "config_pkg.sv",
+    "cv64a6_imafdc_sv39_config_pkg.sv",
+    "cva6_cheri_pkg.sv",
+    "riscv_pkg.sv",
+    "build_config_pkg.sv",
+    "lfsr.sv",
+    "lzc.sv",
+    "cf_math_pkg.sv",
+    "ariane_pkg.sv",
+    "pmp_entry.sv",
+    "pmp.sv",
+    "cva6_ptw.sv",
+    "cva6_shared_tlb.sv",
+    "cva6_tlb.sv",
+    "cva6_mmu.sv",
+    "mmu_fv_master.sv",
+]
+
+output("read %s mmu_live_sva.sv" % " ".join(formal_args))
+output("hierarchy -top mmu_live_sva")
+output("read_slang %s %s" % (
+    " ".join(slang_args),
+    " ".join(sources),
+))
+--pycode-end--
+
+prep -top mmu_fv_master
+
+[files]
+/home/nguyen/project/cheri-cva6-default/core/include/config_pkg.sv
+/home/nguyen/project/cheri-cva6-default/core/include/cva6_cheri_pkg.sv
+/home/nguyen/project/cheri-cva6-default/core/include/cv64a6_imafdc_sv39_config_pkg.sv
+/home/nguyen/project/cheri-cva6-default/core/include/riscv_pkg.sv
+/home/nguyen/project/cheri-cva6-default/core/include/build_config_pkg.sv
+/home/nguyen/project/cheri-cva6-default/vendor/pulp-platform/common_cells/src/lzc.sv
+/home/nguyen/project/cheri-cva6-default/core/cvfpu/src/common_cells/src/lfsr.sv
+/home/nguyen/project/cheri-cva6-default/vendor/pulp-platform/common_cells/src/cf_math_pkg.sv
+/home/nguyen/project/cheri-cva6-default/core/include/ariane_pkg.sv
+/home/nguyen/project/cheri-cva6-default/core/pmp/src/pmp_entry.sv
+/home/nguyen/project/cheri-cva6-default/core/pmp/src/pmp.sv
+/home/nguyen/project/cheri-cva6-default/core/cva6_mmu/cva6_ptw.sv
+/home/nguyen/project/cheri-cva6-default/core/cva6_mmu/cva6_shared_tlb.sv 
+/home/nguyen/project/cheri-cva6-default/core/cva6_mmu/cva6_tlb.sv
+/home/nguyen/project/cheri-cva6-default/core/cva6_mmu/cva6_mmu.sv 
+/home/nguyen/project/cheri-cva6-sva/mmu/sva/mmu_live_sva.sv
+/home/nguyen/project/cheri-cva6-sva/mmu/wrappers/mmu_fv_master.sv
+# ../sva/ptw_pte_sva.sv
+# ../wrappers/ptw_fv_master.sv
+# ../sva/ptw_pte_bind_master.sv
