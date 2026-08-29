@@ -70,7 +70,7 @@ Assumption:
 - req_port_i.data_ruser
 
 
-### 2.1 End to end address translation 
+### 2.1 Data translation 
 
 Verify that every accepted request contains a stable and valid set of attributes:
 
@@ -89,19 +89,10 @@ Verify that every accepted request contains a stable and valid set of attributes
 Assumptions: 
 1. IC req must be asserted until IC rsp vld  (vaddr must be stable)
 2. LSU req must be asserted until DC rsp vld (vaddr must be stable)
-3. Verify a life cycle of IC req: 
-   - IC req pending: 
-     - Use on DC request side, which picks which VPN is used 
-     - Based on the PTE, determine wether any request is expected Address next
-     - Based on the leaf or superpage PTE, determine what should be return to IC
-     - Put overconstraint on PTE to do modelling 
-4. Verify a life cycle of LS req: 
-   - LS req pending: 
-     - Also use on DC req side, which picks which VPN is used
-     - Based on the PTE, determine wether any request is expected Address next
-     - Based on the leaf or superpage PTE, determine what should be return to IC
-     - Put overconstraint on PTE to do modelling 
-5. E2E data overconstraint: 
+3. [OVC] Data coloring: VPN of IC and LS req will always be different;
+   - TODO: Should we always assume IC and LS VA is different ? 
+4. [OVC] Fault coloring: if return PTE has fault 
+4. [OVC] E2E data: 
    - MODEL:
     - Model: PTW, ITLB, Share_tlb: assume that vpn -> ppn maintain some invariants 
     - TODO: fix - The return of DC rsp is PTE, not just address, need to identify this
@@ -118,55 +109,38 @@ Checks:
 2. [IC] Offset of rsp should be the same as offset of req 
 3. [IC] E2E check: 
    - If No Exeception, Flush: PA == VA (due to AM 2.1.3)
-4. [IC] If there is REQ |-> s_eventually RSP : TODO: should fail due to bug https://github.com/Capabilities-Limited/cheri-cva6/issues/131
+4. [IC] If there is REQ |-> s_eventually RSP 
    - BOUND: REQ |-> ##[0:15] RSP 
-5. 
-6. [LS] If there is no ls req -> no ls rsp 
-7. [LS] Offset of rsp should be the same as offset of req
+5. [IC] Verify a life cycle of IC req: 
+   - IC req pending: 
+     - Use on DC request side, which picks which VPN is used 
+     - Based on the PTE, determine wether any request is expected Address next
+     - Based on the leaf or superpage PTE, determine what should be return to IC
+     - Put overconstraint on PTE to do modelling 
+6. [IC] Assess permission are appropriate 
+7. [IC_LS] Rsp cannot get a faulty PPN:
+   - Fault that propagate from PTW -> cache 
+7. [LS] Verify a life cycle of LS req: 
+   - LS req pending: 
+     - Also use on DC req side, which picks which VPN is used
+     - Based on the PTE, determine wether any request is expected Address next
+     - Based on the leaf or superpage PTE, determine what should be return to IC
+     - Put overconstraint on PTE to do modelling 
+8. [LS] Assess permission are appropriate 
 
-8. [DC] data_wdata, data_wuser, data_we, data_be, data_size, is 0 
-9. [DC] 
+9.  [LS] If there is no ls req -> no ls rsp 
+10. [LS] Offset of rsp should be the same as offset of req
 
-### 2.2 Translation response interface
+11. [DC] Format and permission is correct: data_wdata, data_wuser, data_we, data_be, data_size, is 0 
+12. [DC] The root should be correct: satp
+13. [DC] Correct VPN should be choosen for each level 
+14. [DC] Leaf PTE should return rsp to correct requester & terminate the walk 
+15. [DC] Address for request should be correct 
+16. [DC] Correct valid: Eg: No req after cancellation 
 
-Verify that each accepted request eventually produces exactly one of:
-
-- A translated physical address
-- A page fault
-- An access fault
-- A guest-page fault
-- A PMP/PMA fault
-- A CHERI capability fault, if applicable
-- A cancellation due to flush/reset, if cancellation is part of the interface contract
-
-Checks:
-
-1. Response valid is asserted only for a valid response.
-2. Physical address and exception fields are stable while response-ready is low.
-6. A successful response and an exception cannot be asserted together.
-7. Response timing matches the documented hit and miss latency.
-
-### 2.3 Flush and reset
-
-Verify:
-- Reset clears all outstanding transactions.
-- Flush cancels or drains outstanding translations according to the specification.
-- No stale response is produced after flush.
-- New requests are blocked for the required flush interval.
-- `shared_tlb_flush_bsy_o` remains asserted until all required invalidation work is complete.
-- Flush has defined priority over new requests, PTW responses, and cache responses.
-- Back-to-back flushes are handled correctly.
-- Reset during a page walk does not leave the MMU busy permanently.
-
-1. After flush, there should be
-   - No itlb hit
-   - No dtlb hit 
-   - No Shared TLB miss
-  For a given VA, vmid 
-
-### 2.4 Exception
-- HPTW: throwing exception - page fault exception 
-- PMP: access exception 
+### 2.2 Exception
+- [PF] HPTW: throwing exception - page fault exception 
+- [AE] PMP: access exception 
 - DTLB hit:  
   - [LS][ST]: If page is not writable, dirty flags not set, privilege violates -> page fault 
   - [LS][ST]: If PMP violates -> access fault
@@ -175,108 +149,28 @@ Verify:
   - [LS][LD]: If PMP violated -> access fault 
 - DTLB miss: 
   - PTW indicates page fault |-> corresponding (LD/ST) page fault signalled 
-  - PTW indicates access fault -> laod access fault is indicated through address translation 
+  - PMP indicates access fault -> laod access fault is indicated through address translation 
 - [IC]: What should happend on IC_REQ_exp 
+- Page Fault has higher priority to Access fault 
+- [PF] Misalign super page result in page fault
+- [PF] Invalid PTE generate page fault
+- 
 ---
 
-## 3. TLB Verification
-
-### 3.1 TLB hit behavior
+### 2.3 Flush and reset
 
 Verify:
+1. After flush, there should be
+   - No itlb hit
+   - No dtlb hit 
+   - No Shared TLB hit
+  For a given VA, vmid 
+2. After flush, non relate entry should remain hit 
 
-- TLB hit returns the correct physical page number.
-- Hit response timing is correct.
-- Page offset is preserved.
-- Access permissions are checked on hits.
-- ASID and VMID are included in matching where required.
-- Global mappings ignore ASID where specified.
-- Stage-1 and stage-2 entries are not confused.
-- Superpage mappings compare only the required VPN bits.
-- Invalid entries never hit.
+### 2.4 Performance checks
+1. Flush should not impact other VA, ASID, VMID 
 
-### 3.2 TLB miss behavior
-
-Verify:
-
-- A miss starts exactly one page-table walk.
-- PTW requests contain the correct virtual address, access type, privilege, ASID, and VMID.
-- The original request remains associated with the PTW.
-- PTW completion refills the correct TLB.
-- A refill is not performed after a fault or flush.
-- Multiple misses are either correctly serialized or correctly tracked.
-- PTW responses cannot be associated with the wrong request.
-
-### 3.3 SFENCE and invalidation
-
-Verify invalidation for:
-
-- All entries
-- A specific virtual addressf
-- A specific ASID
-- A specific virtual address and ASID
-- Guest/stage-2 entries by VMID
-- A specific VMID and address, if supported
-
-Checks:
-
-- Invalidated entries no longer hit.
-- Nonmatching entries remain valid.
-- Global entries follow the architectural invalidation rules.
-- Invalidation during a PTW has defined behavior.
-- Invalidation during a TLB refill cannot install stale data.
-- Invalidation completion is externally observable if required.
-
----
-
-## 4. Page-Table Walker Verification
-
-### 4.1 Stage-1 page walk
-
-Verify:
-
-- Correct root page-table base is selected from `satp`.
-- Correct page-table level is selected for each translation mode.
-- PTE address calculation is correct.
-- PTE size and alignment are correct.
-- Invalid PTEs generate page faults.
-- Non-leaf PTEs are handled correctly.
-- Leaf PTEs terminate the walk.
-- Misaligned superpages generate page faults.
-- A/D-bit behavior matches the implementation specification.
-- Reserved PTE bits are handled correctly.
-- Maximum walk depth is bounded.
-
-### 4.2 Stage-2 or guest translation
-
-For guest VA → guest PA → host PA, verify:
-
-- Stage-1 uses `vsatp`.
-- Stage-2 uses `hgatp`.
-- Guest page faults are distinguished from host page faults.
-- Both translations apply the required permissions.
-- Guest and host page offsets are handled correctly.
-- Stage-2 translation is not performed when disabled.
-- VMID is used for stage-2 TLB matching.
-- A fault in either stage prevents a successful response.
-- Two-stage walks cannot deadlock or lose the original request.
-
-### 4.3 PTW-to-cache interface
-
-Verify:
-
-- PTW requests are correctly formatted as data-cache requests.
-- PTW requests use the required privilege and access type.
-- PTW responses are matched to the correct PTW request.
-- Cache errors are converted to the correct MMU exception.
-- PTW does not issue requests after cancellation.
-- PTW handles cache backpressure.
-- PTW handles cache response latency and response stalls.
-- PTW cannot issue more requests than the supported outstanding capacity.
-
----
-
-## 5. Permission and Privilege Checks
+## 3. Permission and Privilege Checks
 
 Verify all combinations of:
 
@@ -313,7 +207,7 @@ IMPORTANT: in verification of Privilege, this should be a seperate environment w
 - We will assign this with variable instead -> verify each configuration and how its behave 
 - The Transition MUST be verified differently
 - 
-## 6. PMP and PMA Verification
+## 4. PMP and PMA Verification
 
 Verify:
 
@@ -330,7 +224,7 @@ Verify:
 
 ---
 
-## 7. Address and Boundary Cases
+## 5. Address and Boundary Cases
 
 Verify:
 
@@ -348,7 +242,7 @@ Verify:
 
 ---
 
-## 8. CHERI-Specific Checks
+## 6. CHERI-Specific Checks
 
 If CHERI metadata is part of the MMU interface, verify:
 
@@ -368,7 +262,7 @@ If CHERI checks are implemented outside the MMU, document the boundary and verif
 
 ---
 
-## 9. Priority and Ordering
+## 7. Priority and Ordering
 
 Define and verify the priority between:
 
@@ -390,29 +284,7 @@ Verify:
 
 ---
 
-## 10. Assertions
-
-Recommended assertions:
-
-- Every accepted request eventually completes or is explicitly cancelled.
-- No request produces more than one response.
-- No response occurs without a corresponding request.
-- TLB hit implies a valid matching entry.
-- Invalidated entries cannot produce hits.
-- PTW busy eventually deasserts after completion, fault, flush, or reset.
-- Flush eventually completes.
-- No stale response is produced after flush.
-- Response fields remain stable while stalled.
-- A successful response has no exception.
-- A fault response cannot be marked as a valid translation.
-- Physical address page offset equals virtual address page offset.
-- TLB refill occurs only after a valid leaf PTE.
-- No refill occurs after a PTW fault.
-- No deadlock exists in the PTW/cache interface.
-
----
-
-## 11. Functional Coverage // Not in the scope 
+## 8. Functional Coverage // Not in the scope 
 
 Cover:
 
@@ -442,50 +314,3 @@ Cover:
 - Maximum supported outstanding transactions
 
 ---
-
-## 12. Directed Tests // Not in the scope 
-
-Minimum directed tests:
-
-1. TLB hit with valid read, write, and execute permissions.
-2. TLB miss followed by successful PTW refill.
-3. Invalid PTE.
-4. Misaligned superpage.
-5. Permission fault.
-6. SUM/MXR/VMXR/VSUM combinations.
-7. ASID isolation.
-8. VMID isolation.
-9. Global mapping behavior.
-10. SFENCE by address and ASID.
-11. Full TLB flush.
-12. Flush during an active PTW.
-13. Reset during an active PTW.
-14. PMP allow and deny.
-15. PTW access denied by PMP.
-16. Stage-1 plus stage-2 translation.
-17. Guest-page fault.
-18. Cache backpressure during PTW.
-19. Instruction fetch across a page boundary.
-20. CHERI permission, tag, and bounds faults, if applicable.
-
----
-
-## 13. Items Requiring RTL Clarification
-
-The following must be defined from `cva6_mmu`:
-
-- Exact request and response handshake signals.
-- Whether responses can be stalled.
-- Maximum number of outstanding requests.
-- Whether requests are ordered or use transaction IDs.
-- Exact hit and miss latency.
-- Meaning of flush completion and `shared_tlb_flush_bsy_o`.
-- Whether flush cancels or drains PTWs.
-- Exception signal encoding and priority.
-- Whether PMP/PMA checks are inside the MMU.
-- Whether A/D bits are updated by the PTW.
-- Supported Sv modes.
-- Supported hypervisor translation modes.
-- Whether CHERI checks are inside or outside the MMU.
-- Whether misaligned accesses are split or rejected.
-- Whether page-boundary accesses are handled by the MMU or LSU.
