@@ -135,7 +135,7 @@ module mmu_sva
       end
     end end 
 
-    
+
 // FORMAL debug enhancement: 
   localparam OFFSET_WIDTH = 12;
   localparam int unsigned DCACHE_ID_WIDTH = CVA6Cfg.DcacheIdWidth;
@@ -164,6 +164,9 @@ module mmu_sva
   logic [31:0] ic_rsp_exp_tinst, ls_rsp_exp_tinst;
   logic ic_rsp_exp_gva, ls_rsp_exp_gva;
   logic ic_rsp_exp_valid, ls_rsp_exp_valid;
+
+  logic dut_shared_tlb_hit;
+
   assign icache_rsp_o = icache_areq_o.fetch_valid;
   assign icache_req_i = icache_areq_i.fetch_req;
   assign icache_rsp_paddr = icache_areq_o.fetch_paddr;
@@ -204,6 +207,7 @@ module mmu_sva
   assign ls_rsp_exp_tinst = lsu_exception_o.tinst;
   assign ls_rsp_exp_gva = lsu_exception_o.gva;
   assign ls_rsp_exp_valid = lsu_exception_o.valid;
+  assign dut_shared_tlb_hit = mmu_wrapper.dut.shared_tlb_hit;
 
   logic[63:0] dc_req_address;
   assign dc_req_address = {dc_req_address_tag,dc_req_address_index} >> 3;
@@ -268,10 +272,46 @@ module mmu_sva
     end 
   end 
 
-  logic dut_ptw_state_d_is_KILL_REQ, dut_ptw_state_d_is_WAIT_RVALID, dut_ptw_state_d_is_WAIT_GRANT; 
-  // assign dut_ptw_state_d_is_KILL_REQ = dut.i_ptw.state_d == dut.i_ptw.KILL_REQ; 
-  // assign dut_ptw_state_d_is_WAIT_RVALID = dut.i_ptw.state_d == dut.i_ptw.WAIT_RVALID; 
-  // assign dut_ptw_state_d_is_WAIT_GRANT = dut.i_ptw.state_d == dut.i_ptw.WAIT_GRANT; 
+  logic [CVA6Cfg.VLEN-1:0] s_vaddr_to_be_flushed_tlb;
+  logic [CVA6Cfg.ASID_WIDTH-1:0] s_asid_to_be_flushed_tlb;
+  logic ic_s_vaddr_is_flushed_tlb, ls_s_vaddr_is_flushed_tlb;
+  logic watched_ic_access, watched_ls_access;
+
+  // Track the first actual lookup of this address/ASID independently for
+  // each TLB.  An LSU request with a pre-MMU exception is not a DTLB lookup.
+  // Follow the MMU's ASID muxes: v_i/ld_st_v_i are not constrained low
+  // by this harness even though the selected configuration disables RVH.
+  assign watched_ic_access = dut_itlb_access &&
+      (icache_req_vaddr == s_vaddr_to_be_flushed_tlb) &&
+      ((v_i ? vs_asid_i : asid_i) == s_asid_to_be_flushed_tlb);
+  assign watched_ls_access = dut_dtlb_access &&
+      (lsu_vaddr_i == s_vaddr_to_be_flushed_tlb) &&
+      (((ld_st_v_i || flush_tlb_vvma_i) ? vs_asid_i : asid_i) ==
+       s_asid_to_be_flushed_tlb);
+
+  // A matching flush arms the check until the first subsequent lookup,
+  // regardless of how many idle cycles or unrelated accesses intervene.
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      ic_s_vaddr_is_flushed_tlb <= '0;
+      ls_s_vaddr_is_flushed_tlb <= '0;
+    end else begin
+      if (flush_tlb_i && ((s_vaddr_to_be_flushed_tlb == vaddr_to_be_flushed_i) ||
+                           vaddr_to_be_flushed_i == '0) &&
+                        ((s_asid_to_be_flushed_tlb == asid_to_be_flushed_i) ||
+                           asid_to_be_flushed_i == '0)) begin
+        ic_s_vaddr_is_flushed_tlb <= '1;
+        ls_s_vaddr_is_flushed_tlb <= '1;
+      end else begin
+        if (watched_ic_access) begin
+          ic_s_vaddr_is_flushed_tlb <= '0;
+        end
+        if (watched_ls_access) begin
+          ls_s_vaddr_is_flushed_tlb <= '0;
+        end
+      end
+    end
+  end
 
 // ASSUME: Evironment
 // In this Environment, lets assume there is no g translation 
@@ -295,12 +335,12 @@ module mmu_sva
       // AM3: Icache req has to be high until response is valid
       // icache_req_i && ! (icache_rsp_o || flush_asserted) |=> icache_req_i
         assume (icache_req_i || 
-                !$past(icache_req_i && !(icache_areq_o.fetch_valid || flush_asserted), 1));
+                !$past(icache_req_i && !(icache_areq_o.fetch_valid), 1));
       // AM4: icache_req_vaddr should be stable 
         assume ( $past(!icache_req_i) || (!icache_req_i || (icache_req_vaddr == $past(icache_req_vaddr))));
-      // AM5: lsu_req_i will be high until response 
+      // AM5: lsu_req_i will be high until response or flush is asserted
         assume (lsu_req_i || !$past(lsu_req_i && !lsu_valid_o &&
-                                    !lsu_dtlb_hit_o, 1));
+                                    !lsu_dtlb_hit_o && !flush_asserted, 1));
       // AM6: The LSU request address remains stable until the translation completes.
         assume ($past(!lsu_req_i) ||
                 !lsu_req_i || (lsu_vaddr_i == $past(lsu_vaddr_i)));
@@ -336,6 +376,11 @@ module mmu_sva
         // assume (!lsu_req_i || (lsu_vaddr_i[9+12-1:0] == s_ls_vaddr));
         // assume (!icache_req_i || (icache_req_vaddr[9+12-1:0] == s_ic_vaddr));
         // assume (s_ic_vaddr != s_ls_vaddr);
+        // Overconstraint: The asid_i should be stable until the flush happens
+        assume (asid_i == $past(asid_i) || flush_i || $past(flush_i));
+
+        assume (s_vaddr_to_be_flushed_tlb == $past(s_vaddr_to_be_flushed_tlb));
+        assume (s_asid_to_be_flushed_tlb == $past(s_asid_to_be_flushed_tlb));
     end end
 
 
@@ -401,12 +446,23 @@ module mmu_sva
       `endif 
 
       `ifdef AS_DC_REQ_DATA_STABLE_UNTIL_GRANT
-        // assert (); // Stability of request    
+        // dc_rsp_gnt && !dc_rsp_rvalid |-> dc_rsp_rdata == $past(dc_req_data_wdata);
+        assert (!(dc_rsp_gnt && !dc_rsp_rvalid) || dc_rsp_rdata == $past(dc_req_data_wdata)); // Stability of request    
       `endif 
 
       `ifdef AS_LSU_DTLB_HIT_IMPLY_VALID_RSP
         as_lsu_dtlb_hit_imply_valid_rsp: assert (!$past(lsu_req_i && lsu_dtlb_hit_o) || lsu_valid_o);
       `endif
+
+      `ifdef AS_FLUSH_TLB_IMPLY_NO_HIT
+        // The assertion samples the armed flag before the matching access
+        // clears it via a nonblocking assignment above.
+        if (ic_s_vaddr_is_flushed_tlb && watched_ic_access)
+          as_first_ic_access_misses: assert (!dut_itlb_hit);
+        if (ls_s_vaddr_is_flushed_tlb && watched_ls_access)
+          as_first_ls_access_misses: assert (!lsu_dtlb_hit_o);
+      `endif
+
     if(past_valid[DELAY]) begin
       cover ($past(rst_ni && dut_itlb_access && !flush_i && 
                     !dut_itlb_hit &&

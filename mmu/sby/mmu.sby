@@ -16,6 +16,7 @@ as_ls_e2e_rsp_data_vld prove
 as_itlb_update_priority prove
 as_ic_e2e_rsp_data_color prove color
 as_ls_e2e_rsp_data_color prove color
+as_flush_tlb_imply_no_hit prove
 
 prove_all_safety  prove
 prove_all_safety  as_ic_rsp_vld as_ic_offset_vld as_ls_rsp_vld
@@ -39,7 +40,7 @@ live:  mode live
 
 [engines]
 bmc:   smtbmc boolector
-prove: smtbmc boolector
+prove: abc pdr
 cover: smtbmc boolector
 live:  aiger suprove
 
@@ -59,6 +60,7 @@ safety_tag_defines = {
     "as_itlb_update_priority": ["AS_ITLB_UPDATE_PRIORITY"],
     "as_ic_e2e_rsp_data_color": ["AS_IC_E2E_RSP_DATA_COLOR"],
     "as_ls_e2e_rsp_data_color": ["AS_LS_E2E_RSP_DATA_COLOR"],
+    "as_flush_tlb_imply_no_hit": ["AS_FLUSH_TLB_IMPLY_NO_HIT"],
     "color" : ["OAM_DATA_COLOR"],
 }
 

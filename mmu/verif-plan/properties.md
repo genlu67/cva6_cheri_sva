@@ -26,5 +26,6 @@
 | AS8 | AS_IC_E2E_RSP_DATA_COLOR | Ind CEX | The rsp should only have IC color 
 | AS9 | AS_LS_E2E_RSP_DATA_COLOR | Ind CEX | The rsp should only have LS color 
 | AS10 | AS_DC_REQ_STABLE_UNTIL_GRANT | Running | The DC req should be stable until grant
-| AS11 | AS_DC_REQ_DATA_STABLE_UNTIL_GRANT | Modelling |
+| AS11 | AS_DC_REQ_DATA_STABLE_UNTIL_GRANT | Running | The DC req data should be stable until grant
 | AS12 | AS_LSU_DTLB_HIT_IMPLY_VALID_RSP | Running | The DC rsp should be valid after lsu_dtlb_hit
+| AS13 | AS_FLUSH_TLB_IMPLY_NO_HIT | CEX | After a matching flush, independently require the first ITLB/DTLB lookup of the watched address and ASID to miss; idle cycles and unrelated lookups do not consume the check. BMC finds a legal global ITLB entry surviving an ASID-specific flush (step 8). Exact-address tracking also does not yet account for intervening refills.
