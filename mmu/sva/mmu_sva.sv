@@ -1,3 +1,55 @@
+// Preserve the original standalone define as an instruction-only error suite.
+`ifdef AS_IC_PTE_PAGE_FAULT
+  `ifndef AS_MMU_ERRORS
+    `define AS_MMU_ERRORS
+  `endif
+  `ifndef AS_MMU_IC_ERRORS
+    `define AS_MMU_IC_ERRORS
+  `endif
+`endif
+// Legacy color switches select the same full-address watched checks.
+`ifdef AS_IC_E2E_RSP_DATA_COLOR
+  `ifndef AS_IC_E2E_RSP_DATA_VLD
+    `define AS_IC_E2E_RSP_DATA_VLD
+  `endif
+`endif
+`ifdef AS_LS_E2E_RSP_DATA_COLOR
+  `ifndef AS_LS_E2E_RSP_DATA_VLD
+    `define AS_LS_E2E_RSP_DATA_VLD
+  `endif
+`endif
+// Select endpoint coverage; the assumption environment is always included.
+`ifdef AS_MMU_ERRORS
+  `define MMU_ENDPOINT_CHECKS
+`endif
+`ifdef AS_IC_E2E_RSP_DATA_VLD
+  `ifndef MMU_ENDPOINT_CHECKS
+    `define MMU_ENDPOINT_CHECKS
+  `endif
+`endif
+`ifdef AS_LS_E2E_RSP_DATA_VLD
+  `ifndef MMU_ENDPOINT_CHECKS
+    `define MMU_ENDPOINT_CHECKS
+  `endif
+`endif
+`ifdef AS_IC_E2E_RSP_FAULT_VLD
+  `ifndef MMU_ENDPOINT_CHECKS
+    `define MMU_ENDPOINT_CHECKS
+  `endif
+`endif
+`ifdef AS_LS_E2E_RSP_FAULT_VLD
+  `ifndef MMU_ENDPOINT_CHECKS
+    `define MMU_ENDPOINT_CHECKS
+  `endif
+`endif
+`ifdef AS_MMU_ERRORS
+  `ifndef AS_MMU_IC_ERRORS
+    `ifndef AS_MMU_LS_ERRORS
+      `define AS_MMU_IC_ERRORS
+      `define AS_MMU_LS_ERRORS
+    `endif
+  `endif
+`endif
 module mmu_sva
   import ariane_pkg::*;
 #(
@@ -85,6 +137,11 @@ module mmu_sva
     input logic dut_itlb_access,
     input logic dut_itlb_hit,
     input logic dut_dtlb_access,
+    input logic dut_ptw_pte_valid,
+    input logic [CVA6Cfg.XLEN-1:0] dut_ptw_pte_data,
+    input logic [CVA6Cfg.PtLevels-2:0] dut_ptw_level,
+    input logic dut_ptw_is_instr,
+    input logic dut_ptw_access_allowed,
 
     // PMP
 
@@ -109,7 +166,7 @@ module mmu_sva
     logic v;
   };
   
-// Flush: When flush happend, there should be no valid translation, and no allow_tag_o signal.
+// Combined pipeline/TLB flush indication used by the legacy control checks.
   logic flush_asserted;
   assign flush_asserted = flush_i && flush_tlb_i;
                           // flush_tlb_i || flush_tlb_vvma_i || flush_tlb_gvma_i || 
@@ -140,7 +197,6 @@ module mmu_sva
   localparam OFFSET_WIDTH = 12;
   localparam int unsigned DCACHE_ID_WIDTH = CVA6Cfg.DcacheIdWidth;
   localparam VPN_W = 9;
-  localparam VS2_N_OFFSET_W = OFFSET_WIDTH + VPN_W;
   logic icache_rsp_o, icache_req_i; 
   logic [CVA6Cfg.VLEN-1:0] icache_req_vaddr;
   logic [CVA6Cfg.PLEN-1:0] icache_rsp_paddr;
@@ -154,7 +210,6 @@ module mmu_sva
   logic [CVA6Cfg.DcacheIdWidth-1:0] dc_rsp_rid;
   logic dc_req_valid, dc_req_we;
   logic [CVA6Cfg.DcacheIdWidth-1:0] dc_req_id;
-  logic [CVA6Cfg.DcacheIdWidth-1:0] dc_req_id_q;
   logic dc_rsp_id_matches_req;
   logic [CVA6Cfg.DCACHE_INDEX_WIDTH-1:0] dc_req_address_index;
   logic [CVA6Cfg.DCACHE_TAG_WIDTH-1:0] dc_req_address_tag;
@@ -179,7 +234,7 @@ module mmu_sva
   assign ls_req_vaddr     = lsu_vaddr_i; 
   assign ls_rsp_paddr     = lsu_paddr_o;
   assign ls_req_vaddr_offset      = ls_req_vaddr[OFFSET_WIDTH-1:0]; 
-  assign ls_req_paddr_offset      = ls_rsp_paddr[OFFSET_WIDTH-1:0];
+  assign ls_rsp_paddr_offset      = ls_rsp_paddr[OFFSET_WIDTH-1:0];
   assign ls_req_vaddr_vpn2     = ls_req_vaddr[VPN_W*3+OFFSET_WIDTH-1:VPN_W*2+OFFSET_WIDTH];
   assign ls_req_vaddr_vpn1     = ls_req_vaddr[VPN_W*2+OFFSET_WIDTH-1:VPN_W*1+OFFSET_WIDTH];
   assign ls_req_vaddr_vpn0     = ls_req_vaddr[VPN_W*1+OFFSET_WIDTH-1:VPN_W*0+OFFSET_WIDTH];
@@ -189,11 +244,6 @@ module mmu_sva
   assign dc_req_valid = req_port_o.data_req;
   assign dc_req_we = req_port_o.data_we;
   assign dc_req_id = req_port_o.data_id;
-  always_ff @(posedge clk_i) begin
-    if (!rst_ni) dc_req_id_q <= '0;
-    else if (dc_req_valid && dc_rsp_gnt) dc_req_id_q <= dc_req_id;
-  end
-  assign dc_rsp_id_matches_req = (dc_rsp_rid == dc_req_id_q);
   assign dc_req_address_index = req_port_o.address_index;
   assign dc_req_address_tag = req_port_o.address_tag;
   assign dc_rsp_rdata = req_port_i.data_rdata;
@@ -209,9 +259,15 @@ module mmu_sva
   assign ls_rsp_exp_valid = lsu_exception_o.valid;
   assign dut_shared_tlb_hit = mmu_wrapper.dut.shared_tlb_hit;
 
-  logic[63:0] dc_req_address;
-  assign dc_req_address = {dc_req_address_tag,dc_req_address_index} >> 3;
   logic [23:0] past_valid;
+
+  // Every property suite uses this one interface and watched-memory model.
+  `include "mmu_watch_model.svh"
+  `ifdef AS_MMU_ERRORS
+    `include "mmu_errors.svh"
+  `endif
+
+  assign dc_rsp_id_matches_req = (dc_rsp_rid == dc_id_q);
 
   logic ic_ls_priority_pending, ic_ls_appear_same_cycle, ic_ls_not_in_prev_cycle; 
   assign ic_ls_appear_same_cycle = (icache_req_i && lsu_req_i) && ic_ls_not_in_prev_cycle;
@@ -228,59 +284,12 @@ module mmu_sva
       end
   end end
   
-  logic dc_req_pending; 
-  always_ff @( posedge clk_i ) begin 
-    if(!rst_ni) begin 
-      dc_req_pending <= 1'b0;
-    end else begin
-      if (dc_req_valid && dc_rsp_gnt) begin
-        dc_req_pending <= 1'b1;
-      end else if (dc_req_pending && dc_rsp_rvalid) begin
-        dc_req_pending <= 1'b0;
-      end
-  end end
-
-  logic [9+12-1:0] s_ic_vaddr, s_ls_vaddr;
-  logic [9+12-1:0] s_ic_vaddr_init, s_ls_vaddr_init;
-  always_ff @( posedge clk_i ) begin 
-    if(!rst_ni) begin 
-      s_ic_vaddr <= s_ic_vaddr_init;
-      s_ls_vaddr <= s_ls_vaddr_init;
-    end 
-  end
-
-  logic [1:0] ic_ptw_s_cnt, ls_ptw_s_cnt; 
-  pte_cva6_t pte_data_i;
-  assign pte_data_i = pte_cva6_t'(dc_rsp_rdata);
-
-  // Only work with coloring
-  always_ff @( posedge clk_i ) begin 
-    if (!rst_ni) begin 
-      ic_ptw_s_cnt <= 0; 
-      ls_ptw_s_cnt <= 0; 
-    end else begin 
-      if(dc_req_valid && dc_rsp_gnt && dc_req_address[1] && icache_req_i) begin// {pte.pnn, vpn}
-        ic_ptw_s_cnt <= ic_ptw_s_cnt + 1;
-      end else if (icache_req_i && icache_rsp_o) begin 
-        ic_ptw_s_cnt <= 0; 
-      end 
-      if(dc_req_valid && dc_rsp_gnt && !dc_req_address[1] && lsu_req_i) begin 
-        ls_ptw_s_cnt <= ls_ptw_s_cnt; 
-      end else if (ls_ptw_s_cnt && lsu_valid_o) begin 
-        ls_ptw_s_cnt <= 0; 
-      end 
-    end 
-  end 
-
-  logic [CVA6Cfg.VLEN-1:0] s_vaddr_to_be_flushed_tlb;
-  logic [CVA6Cfg.ASID_WIDTH-1:0] s_asid_to_be_flushed_tlb;
   logic ic_s_vaddr_is_flushed_tlb, ls_s_vaddr_is_flushed_tlb;
   logic watched_ic_access, watched_ls_access;
 
   // Track the first actual lookup of this address/ASID independently for
   // each TLB.  An LSU request with a pre-MMU exception is not a DTLB lookup.
-  // Follow the MMU's ASID muxes: v_i/ld_st_v_i are not constrained low
-  // by this harness even though the selected configuration disables RVH.
+  // Follow the MMU's ASID muxes; the shared environment disables RVH.
   assign watched_ic_access = dut_itlb_access &&
       (icache_req_vaddr == s_vaddr_to_be_flushed_tlb) &&
       ((v_i ? vs_asid_i : asid_i) == s_asid_to_be_flushed_tlb);
@@ -313,77 +322,6 @@ module mmu_sva
     end
   end
 
-// ASSUME: Evironment
-// In this Environment, lets assume there is no g translation 
-  always_ff @(posedge clk_i) begin
-    if (rst_ni) begin 
-      // AM1: No hypervisor translation 
-        assume (enable_translation_i == 1'b1);
-        assume (enable_g_translation_i == 1'b0); 
-        assume (en_ld_st_translation_i == 1'b1);
-        assume (en_ld_st_g_translation_i == 1'b0);  
-        // This harness uses an RVH-disabled configuration.  HFENCE.VVMA/GVMA
-        // cannot be generated in that configuration, so keep those controls
-        // inactive.  In particular, flush_tlb_vvma_i also selects vs_asid_i
-        // for a DTLB lookup even when RVH is disabled.
-        assume (!flush_tlb_vvma_i);
-        assume (!flush_tlb_gvma_i);
-
-      // AM2: No flush_tlb_i without flush_i
-        assume (flush_i || !flush_tlb_i);  
-
-      // AM3: Icache req has to be high until response is valid
-      // icache_req_i && ! (icache_rsp_o || flush_asserted) |=> icache_req_i
-        assume (icache_req_i || 
-                !$past(icache_req_i && !(icache_areq_o.fetch_valid), 1));
-      // AM4: icache_req_vaddr should be stable 
-        assume ( $past(!icache_req_i) || (!icache_req_i || (icache_req_vaddr == $past(icache_req_vaddr))));
-      // AM5: lsu_req_i will be high until response or flush is asserted
-        assume (lsu_req_i || !$past(lsu_req_i && !lsu_valid_o &&
-                                    !lsu_dtlb_hit_o && !flush_asserted, 1));
-      // AM6: The LSU request address remains stable until the translation completes.
-        assume ($past(!lsu_req_i) ||
-                !lsu_req_i || (lsu_vaddr_i == $past(lsu_vaddr_i)));
-      // AM7: The translation context belongs to the same outstanding LSU request.
-        assume ($past(!lsu_req_i) || !lsu_req_i ||
-                ({lsu_is_store_i, lsu_is_cap_i, ld_st_v_i,
-                  asid_i, vs_asid_i, vmid_i,
-                  satp_ppn_i, vsatp_ppn_i, hgatp_ppn_i, pre_mmu_ex_i} ==
-                 $past({lsu_is_store_i, lsu_is_cap_i, ld_st_v_i,
-                        asid_i, vs_asid_i, vmid_i,
-                        satp_ppn_i, vsatp_ppn_i, hgatp_ppn_i, pre_mmu_ex_i})));
-      // Zero-wait dcache model in terms of the PTW handshake: grant a request
-      // immediately, then return its matching response in WAIT_RVALID on the
-      // following clock.  A same-edge rvalid is too early for the PTW FSM.
-      // OVERCONSTRAINTS
-        // if(past_valid[1]) begin        
-        //   assume (!$past(dc_req_valid && dc_rsp_gnt) == (dc_rsp_rvalid));
-        // end
-        // assume (!$past(rst_ni) || !$past(dc_req_valid && dc_rsp_gnt) ||
-        //         (dc_rsp_rvalid && dc_rsp_id_matches_req));
-      // VPN of icache and ls can be used to coloring
-      `ifdef OAM_DATA_COLOR // AM8
-        assume (icache_req_vaddr_vpn2[1] && icache_req_vaddr_vpn1[1] && icache_req_vaddr_vpn0[1]);
-        assume (!ls_req_vaddr_vpn2[1] && !ls_req_vaddr_vpn1[1] && !ls_req_vaddr_vpn0[1]);
-      `endif
-      // DC model: 1 request at a time 
-      // AM9: Only rsp valid when dc_req_pending: !dc_req_pending |-> !dc_rsp_rvalid  
-        assume (dc_req_pending || !dc_rsp_rvalid);
-      // Model
-        if (dc_rsp_rvalid) begin
-          assume (pte_data_i.ppn[CVA6Cfg.PPNW-1:0] == $past(dc_req_address[CVA6Cfg.PPNW-1:0]));
-        end 
-        // assume (!lsu_req_i || (lsu_vaddr_i[9+12-1:0] == s_ls_vaddr));
-        // assume (!icache_req_i || (icache_req_vaddr[9+12-1:0] == s_ic_vaddr));
-        // assume (s_ic_vaddr != s_ls_vaddr);
-        // Overconstraint: The asid_i should be stable until the flush happens
-        assume (asid_i == $past(asid_i) || flush_i || $past(flush_i));
-
-        assume (s_vaddr_to_be_flushed_tlb == $past(s_vaddr_to_be_flushed_tlb));
-        assume (s_asid_to_be_flushed_tlb == $past(s_asid_to_be_flushed_tlb));
-    end end
-
-
   localparam DELAY = 10;
 // Safety assertion
   always_ff @(posedge clk_i) begin
@@ -410,34 +348,45 @@ module mmu_sva
       end
       `endif
 
-    // IC rsp end2end 
-      `ifdef AS_IC_E2E_RSP_DATA_VLD // icache_rsp_o |-> icache_areq_o.paddr[39:0] == icache_req_vaddr[39:0]
-      if(past_valid[1]) begin
-        as_ic_e2e_rsp_data_vld: assert(!icache_rsp_o || ic_rsp_exp_valid || (icache_rsp_paddr[VS2_N_OFFSET_W-1:0] == icache_req_vaddr[VS2_N_OFFSET_W-1:0]));
+    // Fault agreement and successful-response PA are independently selectable.
+    // PA is defined only when both the reference and DUT report success.
+      if (!flush_i && icache_req_i && icache_rsp_o &&
+          icache_req_vaddr == watch_vaddr[0]) begin
+        `ifdef AS_IC_E2E_RSP_FAULT_VLD
+          as_ic_e2e_rsp_fault_vld: assert (ic_rsp_exp_valid == watch_expected_fault[0]);
+        `endif
+        `ifdef AS_IC_E2E_RSP_DATA_VLD
+          if (!watch_expected_fault[0] && !ic_rsp_exp_valid) begin
+            as_ic_e2e_rsp_data_vld: assert (icache_rsp_paddr == watch_expected_paddr[0]);
+            cp_ic_e2e_rsp_data: cover (enable_translation_i &&
+                icache_rsp_paddr == watch_expected_paddr[0]);
+          end
+        `endif
       end
-      `endif
-      `ifdef AS_LS_E2E_RSP_DATA_VLD // lsu_valid_o |-> lsu_paddr_o[39:0] == lsu_vaddr_i[39:0]
-      if(past_valid[1]) begin
-        as_ls_e2e_rsp_data_vld: assert(!lsu_valid_o || ls_rsp_exp_valid || (lsu_paddr_o[VS2_N_OFFSET_W-1:0] == $past(lsu_vaddr_i[VS2_N_OFFSET_W-1:0]))); 
+      if (!flush_i && !watch_flush_q && watch_lsu_req_q && lsu_valid_o &&
+          watch_lsu_vaddr_q == watch_vaddr[1]) begin
+        `ifdef AS_LS_E2E_RSP_FAULT_VLD
+          as_ls_e2e_rsp_fault_vld: assert (
+              ls_rsp_exp_valid == (watch_pre_ex_q.valid || watch_expected_fault[1]));
+        `endif
+        `ifdef AS_LS_E2E_RSP_DATA_VLD
+          if (!watch_pre_ex_q.valid && !watch_expected_fault[1] && !ls_rsp_exp_valid) begin
+            as_ls_e2e_rsp_data_vld: assert (lsu_paddr_o == watch_expected_paddr[1]);
+            cp_ls_e2e_rsp_data: cover (watch_lsu_translation_q &&
+                lsu_paddr_o == watch_expected_paddr[1]);
+          end
+        `endif
       end
-      `endif
 
     // IC priority 
       `ifdef AS_ITLB_UPDATE_PRIORITY // ic_ls_priority_pending |-> !dut_dtlb_update_valid
         as_itlb_update_priority: assert (!ic_ls_priority_pending || !dut_dtlb_update_valid);
       `endif
 
-    // IC RSP addr will always have coloring: 
-      `ifdef AS_IC_E2E_RSP_DATA_COLOR
-        //icache_rsp_o |-> icache_rsp_paddr[OFFSET_WIDTH+1] == 1 
-        as_ic_e2e_rsp_data_color: assert (!icache_rsp_o || 
-                ic_rsp_exp_valid || icache_rsp_paddr[OFFSET_WIDTH+1]);
-      `endif
-
-    // LS RSP addr will always have coloring: 
-      `ifdef AS_LS_E2E_RSP_DATA_COLOR
-        //lsu_valid_o |-> lsu_paddr_o[OFFSET_WIDTH+1] == 0 
-        as_ls_e2e_rsp_data_color: assert (!lsu_valid_o || ls_rsp_exp_valid || !lsu_paddr_o[OFFSET_WIDTH+1]);
+      // Check the single outstanding PTW read contract independently.
+      `ifdef AS_WATCH_SINGLE_PENDING_READ
+        if (dc_req_valid && dc_rsp_gnt)
+          as_watch_single_pending_read: assert (!dc_req_pending || dc_rsp_rvalid);
       `endif
 
       // DC req stay high until grant dc_req_valid && !dc_rsp_gnt |-> dc_req_valid
@@ -463,6 +412,7 @@ module mmu_sva
           as_first_ls_access_misses: assert (!lsu_dtlb_hit_o);
       `endif
 
+    `ifndef MMU_ENDPOINT_CHECKS
     if(past_valid[DELAY]) begin
       cover ($past(rst_ni && dut_itlb_access && !flush_i && 
                     !dut_itlb_hit &&
@@ -474,6 +424,7 @@ module mmu_sva
                     dut_dtlb_update_valid);
       // cover (dut.i_ptw.shared_tlb_update_valid);
     end
+    `endif
     end
   end
   // Interface 
