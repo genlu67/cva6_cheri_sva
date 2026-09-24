@@ -137,6 +137,14 @@ module mmu_sva
     input logic dut_itlb_access,
     input logic dut_itlb_hit,
     input logic dut_dtlb_access,
+    input logic dut_dtlb_hit,
+    // ITLB is index 0, DTLB index 1. Single-stage refill metadata.
+    input logic [1:0][CVA6Cfg.VpnLen-1:0] dut_tlb_update_vpn,
+    input logic [1:0][CVA6Cfg.ASID_WIDTH-1:0] dut_tlb_update_asid,
+    input logic [1:0][CVA6Cfg.PtLevels-2:0] dut_tlb_update_is_page,
+    input logic [1:0] dut_tlb_update_napot,
+    input logic [1:0] dut_tlb_update_global,
+    input logic [1:0] dut_tlb_hit_global,
     input logic dut_ptw_pte_valid,
     input logic [CVA6Cfg.XLEN-1:0] dut_ptw_pte_data,
     input logic [CVA6Cfg.PtLevels-2:0] dut_ptw_level,
@@ -286,38 +294,80 @@ module mmu_sva
   
   logic ic_s_vaddr_is_flushed_tlb, ls_s_vaddr_is_flushed_tlb;
   logic watched_ic_access, watched_ls_access;
+  logic watched_flush, watched_flush_all_asids_q;
+  logic [1:0] watched_tlb_refill;
 
-  // Track the first actual lookup of this address/ASID independently for
-  // each TLB.  An LSU request with a pre-MMU exception is not a DTLB lookup.
-  // Follow the MMU's ASID muxes; the shared environment disables RVH.
+  // Only translated accesses consume the check. The LSU hit output also
+  // means "ready" during bypass, so bypass is not a TLB lookup here.
   assign watched_ic_access = dut_itlb_access &&
+      (enable_translation_i || enable_g_translation_i) &&
       (icache_req_vaddr == s_vaddr_to_be_flushed_tlb) &&
       ((v_i ? vs_asid_i : asid_i) == s_asid_to_be_flushed_tlb);
   assign watched_ls_access = dut_dtlb_access &&
+      (en_ld_st_translation_i || en_ld_st_g_translation_i) &&
       (lsu_vaddr_i == s_vaddr_to_be_flushed_tlb) &&
       (((ld_st_v_i || flush_tlb_vvma_i) ? vs_asid_i : asid_i) ==
        s_asid_to_be_flushed_tlb);
 
-  // A matching flush arms the check until the first subsequent lookup,
-  // regardless of how many idle cycles or unrelated accesses intervene.
+  // SFENCE addresses select pages, not individual bytes. ASID-specific
+  // flushes preserve global mappings; remember that exception separately.
+  assign watched_flush = flush_tlb_i &&
+      ((s_vaddr_to_be_flushed_tlb[CVA6Cfg.VpnLen+11:12] ==
+        vaddr_to_be_flushed_i[CVA6Cfg.VpnLen+11:12]) ||
+       vaddr_to_be_flushed_i == '0) &&
+      ((s_asid_to_be_flushed_tlb == asid_to_be_flushed_i) ||
+       asid_to_be_flushed_i == '0);
+
+  function automatic logic refill_covers_watched_page(
+      input logic [CVA6Cfg.VpnLen-1:0] vpn,
+      input logic [CVA6Cfg.PtLevels-2:0] is_page,
+      input logic is_napot);
+    logic [CVA6Cfg.VpnLen-1:0] mask;
+    mask = '1;
+    // is_page[0] is the root leaf (1 GiB for Sv39), [1] is 2 MiB.
+    for (int level = 0; level < CVA6Cfg.PtLevels-1; level++)
+      if (is_page[level])
+        mask &= {CVA6Cfg.VpnLen{1'b1}} <<
+                ((CVA6Cfg.PtLevels-1-level) * (CVA6Cfg.VpnLen/CVA6Cfg.PtLevels));
+    if (CVA6Cfg.SvnapotEn && is_napot) mask &= {CVA6Cfg.VpnLen{1'b1}} << 4;
+    return (vpn & mask) == (s_vaddr_to_be_flushed_tlb[CVA6Cfg.VpnLen+11:12] & mask);
+  endfunction
+
+  // Observe an accepted refill, not just any PTW result. TLB flush wins
+  // over update, and these TLBs suppress updates when the lookup hits.
+  // Refills for other pages/ASIDs must not release the watched obligation.
+  always_comb begin
+    watched_tlb_refill = '0;
+    for (int tlb = 0; tlb < 2; tlb++) begin
+      watched_tlb_refill[tlb] = !flush_tlb_i &&
+          (tlb == 0 ? (dut_itlb_update_valid && !dut_itlb_hit) :
+                      (dut_dtlb_update_valid && !dut_dtlb_hit)) &&
+          (dut_tlb_update_global[tlb] ||
+           dut_tlb_update_asid[tlb] == s_asid_to_be_flushed_tlb) &&
+          refill_covers_watched_page(dut_tlb_update_vpn[tlb],
+                                    dut_tlb_update_is_page[tlb],
+                                    dut_tlb_update_napot[tlb]);
+    end
+  end
+
+  // A flush removes old mappings. A later covering refill can make the
+  // first exact-address lookup hit, so it ends that TLB's miss obligation.
+  // Refill validity/PTE faults are checked by the separate endpoint suite.
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
       ic_s_vaddr_is_flushed_tlb <= '0;
       ls_s_vaddr_is_flushed_tlb <= '0;
+      watched_flush_all_asids_q <= '0;
     end else begin
-      if (flush_tlb_i && ((s_vaddr_to_be_flushed_tlb == vaddr_to_be_flushed_i) ||
-                           vaddr_to_be_flushed_i == '0) &&
-                        ((s_asid_to_be_flushed_tlb == asid_to_be_flushed_i) ||
-                           asid_to_be_flushed_i == '0)) begin
+      if (watched_flush) begin
         ic_s_vaddr_is_flushed_tlb <= '1;
         ls_s_vaddr_is_flushed_tlb <= '1;
+        watched_flush_all_asids_q <= (asid_to_be_flushed_i == '0);
       end else begin
-        if (watched_ic_access) begin
+        if (watched_ic_access || watched_tlb_refill[0])
           ic_s_vaddr_is_flushed_tlb <= '0;
-        end
-        if (watched_ls_access) begin
+        if (watched_ls_access || watched_tlb_refill[1])
           ls_s_vaddr_is_flushed_tlb <= '0;
-        end
       end
     end
   end
@@ -407,9 +457,11 @@ module mmu_sva
         // The assertion samples the armed flag before the matching access
         // clears it via a nonblocking assignment above.
         if (ic_s_vaddr_is_flushed_tlb && watched_ic_access)
-          as_first_ic_access_misses: assert (!dut_itlb_hit);
+          as_first_ic_access_misses: assert (!dut_itlb_hit ||
+              (!watched_flush_all_asids_q && dut_tlb_hit_global[0]));
         if (ls_s_vaddr_is_flushed_tlb && watched_ls_access)
-          as_first_ls_access_misses: assert (!lsu_dtlb_hit_o);
+          as_first_ls_access_misses: assert (!lsu_dtlb_hit_o ||
+              (!watched_flush_all_asids_q && dut_tlb_hit_global[1]));
       `endif
 
     `ifndef MMU_ENDPOINT_CHECKS

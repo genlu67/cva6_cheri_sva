@@ -13,18 +13,42 @@ as_live_bound_ic_rsp_vld prove
 as_live_bound_ls_rsp_vld prove
 as_ic_e2e_rsp_data_vld prove
 as_ls_e2e_rsp_data_vld prove
+as_ic_e2e_rsp_fault_vld prove
+as_ls_e2e_rsp_fault_vld prove
+as_mmu_e2e prove as_ic_e2e_rsp_data_vld as_ls_e2e_rsp_data_vld as_ic_e2e_rsp_fault_vld as_ls_e2e_rsp_fault_vld
+bmc_mmu_e2e bmc as_ic_e2e_rsp_data_vld as_ls_e2e_rsp_data_vld as_ic_e2e_rsp_fault_vld as_ls_e2e_rsp_fault_vld
+cover_mmu_e2e cover as_ic_e2e_rsp_data_vld as_ls_e2e_rsp_data_vld as_ic_e2e_rsp_fault_vld as_ls_e2e_rsp_fault_vld
 as_itlb_update_priority prove
-as_ic_e2e_rsp_data_color prove color
-as_ls_e2e_rsp_data_color prove color
+as_watch_single_pending_read prove
+# Compatibility aliases; the checks now use watched PTEs, without coloring.
+as_ic_e2e_rsp_data_color prove
+as_ls_e2e_rsp_data_color prove
 as_flush_tlb_imply_no_hit prove
+as_ic_pte_page_fault prove
+bmc_ic_pte_page_fault bmc
+cover_ic_pte_page_fault cover
+
+as_mmu_errors prove
+bmc_mmu_errors bmc
+cover_mmu_errors cover
+as_mmu_ic_errors prove
+as_mmu_ls_errors prove
+bmc_mmu_ic_errors bmc
+bmc_mmu_ls_errors bmc
+
+# Diagnostic subset: keep PMP checks but exclude TOR while debugging its RTL mismatch.
+bmc_mmu_errors_napot bmc as_mmu_errors mmu_errors_napot
+bmc_mmu_ls_errors_napot bmc as_mmu_ls_errors mmu_errors_napot
+bmc_mmu_ic_errors_napot bmc as_mmu_ic_errors mmu_errors_napot
+cover_mmu_errors_napot cover as_mmu_errors mmu_errors_napot
 
 prove_all_safety  prove
 prove_all_safety  as_ic_rsp_vld as_ic_offset_vld as_ls_rsp_vld
 prove_all_safety  as_live_bound_ic_rsp_vld as_live_bound_ls_rsp_vld
-prove_all_safety  as_ic_e2e_rsp_data_vld as_ls_e2e_rsp_data_vld
-prove_all_safety  as_itlb_update_priority as_ic_e2e_rsp_data_color
+prove_all_safety  as_itlb_update_priority as_watch_single_pending_read
+prove_all_safety  as_mmu_errors
 
-prove_color       color prove
+prove_color       prove
 prove_color       as_ls_e2e_rsp_data_color as_ic_e2e_rsp_data_color
 
 
@@ -40,7 +64,7 @@ live:  mode live
 
 [engines]
 bmc:   smtbmc boolector
-prove: abc pdr
+prove: smtbmc boolector
 cover: smtbmc boolector
 live:  aiger suprove
 
@@ -57,11 +81,24 @@ safety_tag_defines = {
     "as_live_bound_ls_rsp_vld": ["AS_LIVE_BOUND_LS_RSP_VLD"],
     "as_ic_e2e_rsp_data_vld": ["AS_IC_E2E_RSP_DATA_VLD"],
     "as_ls_e2e_rsp_data_vld": ["AS_LS_E2E_RSP_DATA_VLD"],
+    "as_ic_e2e_rsp_fault_vld": ["AS_IC_E2E_RSP_FAULT_VLD"],
+    "as_ls_e2e_rsp_fault_vld": ["AS_LS_E2E_RSP_FAULT_VLD"],
     "as_itlb_update_priority": ["AS_ITLB_UPDATE_PRIORITY"],
+    "as_watch_single_pending_read": ["AS_WATCH_SINGLE_PENDING_READ"],
     "as_ic_e2e_rsp_data_color": ["AS_IC_E2E_RSP_DATA_COLOR"],
     "as_ls_e2e_rsp_data_color": ["AS_LS_E2E_RSP_DATA_COLOR"],
     "as_flush_tlb_imply_no_hit": ["AS_FLUSH_TLB_IMPLY_NO_HIT"],
-    "color" : ["OAM_DATA_COLOR"],
+    "as_ic_pte_page_fault": ["AS_IC_PTE_PAGE_FAULT"],
+    "bmc_ic_pte_page_fault": ["AS_IC_PTE_PAGE_FAULT"],
+    "cover_ic_pte_page_fault": ["AS_IC_PTE_PAGE_FAULT"],
+    "as_mmu_errors": ["AS_MMU_ERRORS", "AS_MMU_IC_ERRORS", "AS_MMU_LS_ERRORS"],
+    "bmc_mmu_errors": ["AS_MMU_ERRORS", "AS_MMU_IC_ERRORS", "AS_MMU_LS_ERRORS"],
+    "cover_mmu_errors": ["AS_MMU_ERRORS", "AS_MMU_IC_ERRORS", "AS_MMU_LS_ERRORS"],
+    "as_mmu_ic_errors": ["AS_MMU_ERRORS", "AS_MMU_IC_ERRORS"],
+    "as_mmu_ls_errors": ["AS_MMU_ERRORS", "AS_MMU_LS_ERRORS"],
+    "bmc_mmu_ic_errors": ["AS_MMU_ERRORS", "AS_MMU_IC_ERRORS"],
+    "bmc_mmu_ls_errors": ["AS_MMU_ERRORS", "AS_MMU_LS_ERRORS"],
+    "mmu_errors_napot": ["MMU_ERRORS_PMP_NAPOT_ONLY"],
 }
 
 live_tag_defines = {
@@ -107,6 +144,8 @@ sources = [
     "cva6_shared_tlb.sv",
     "cva6_tlb.sv",
     "cva6_mmu.sv",
+    "mmu_pmp_ref.sv",
+    "mmu_translation_ref.sv",
     "mmu_sva.sv",
     "mmu_wrapper.sv",
 ]
@@ -138,5 +177,9 @@ cva6_shared_tlb.sv      ${CVA_PATH}/core/cva6_mmu/cva6_shared_tlb.sv
 cva6_tlb.sv             ${CVA_PATH}/core/cva6_mmu/cva6_tlb.sv
 cva6_mmu.sv             ${CVA_PATH}/core/cva6_mmu/cva6_mmu.sv
 mmu_live_sva.sv         sva/mmu_live_sva.sv
+mmu_pmp_ref.sv          sva/mmu_pmp_ref.sv
+mmu_translation_ref.sv  sva/mmu_translation_ref.sv
+mmu_watch_model.svh     sva/mmu_watch_model.svh
+mmu_errors.svh         sva/mmu_errors.svh
 mmu_sva.sv              sva/mmu_sva.sv
 mmu_wrapper.sv          wrappers/mmu_wrapper.sv

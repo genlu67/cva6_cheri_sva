@@ -187,6 +187,11 @@ module mmu_wrapper
       .*
   );
 
+  // yosys-slang cannot resolve hierarchical enum constants. This is the
+  // PTE_LOOKUP encoding in cva6_ptw's state enum; WAIT_RVALID must be excluded
+  // because it consumes discarded responses after cancellation.
+  localparam logic [2:0] PTW_PTE_LOOKUP = 3'd2;
+
   mmu_sva #(
       .CVA6Cfg             (CVA6Cfg),
       .icache_areq_t       (icache_areq_t),
@@ -206,6 +211,23 @@ module mmu_wrapper
       .dut_itlb_access              (dut.itlb_lu_access),
       .dut_itlb_hit                 (dut.itlb_lu_hit),
       .dut_dtlb_access              (dut.dtlb_lu_access),
+      .dut_dtlb_hit                 (dut.dtlb_lu_hit),
+      .dut_tlb_update_vpn           ({dut.update_dtlb.vpn, dut.update_itlb.vpn}),
+      .dut_tlb_update_asid          ({dut.update_dtlb.asid, dut.update_itlb.asid}),
+      .dut_tlb_update_is_page       ({dut.update_dtlb.is_page, dut.update_itlb.is_page}),
+      .dut_tlb_update_napot         ({dut.update_dtlb.is_napot_64k, dut.update_itlb.is_napot_64k}),
+      .dut_tlb_update_global        ({dut.update_dtlb.content.g, dut.update_itlb.content.g}),
+      .dut_tlb_hit_global           ({dut.dtlb_content.g, dut.itlb_content.g}),
+      .dut_ptw_pte_valid            ((dut.i_ptw.state_q == PTW_PTE_LOOKUP) &&
+                                    dut.i_ptw.data_rvalid_q),
+      .dut_ptw_pte_data             (dut.i_ptw.data_rdata_q),
+      .dut_ptw_level                (dut.i_ptw.ptw_lvl_q[0]),
+      .dut_ptw_is_instr             (dut.walking_instr),
+      .dut_ptw_access_allowed       (CVA6Cfg.RVFI_DII ?
+                                    config_pkg::range_check(64'h8000_0000,
+                                                           64'h000800000,
+                                                           dut.i_ptw.ptw_pptr_q) :
+                                    dut.i_ptw.allow_access),
       .*
   );
 

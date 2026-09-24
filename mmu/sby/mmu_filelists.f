@@ -15,5 +15,8 @@ ${CVA_PATH}/core/cva6_mmu/cva6_shared_tlb.sv
 ${CVA_PATH}/core/cva6_mmu/cva6_tlb.sv
 ${CVA_PATH}/core/cva6_mmu/cva6_mmu.sv
 ${SVA_ROOT}/mmu/sva/mmu_live_sva.sv
++incdir+${SVA_ROOT}/mmu/sva
+${SVA_ROOT}/mmu/sva/mmu_pmp_ref.sv
+${SVA_ROOT}/mmu/sva/mmu_translation_ref.sv
 ${SVA_ROOT}/mmu/sva/mmu_sva.sv
 ${SVA_ROOT}/mmu/wrappers/mmu_wrapper.sv
